@@ -16,7 +16,7 @@ set_group_add_request 审批（与入站 request 事件一致）。
 """
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 from nonebot.params import CommandArg
 
 join_request_list_test = on_command("申请列表", priority=5)

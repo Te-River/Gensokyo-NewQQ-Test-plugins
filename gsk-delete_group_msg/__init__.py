@@ -19,7 +19,7 @@ Bot 自身的消息（与 [CQ:remove] CQ 码路径不同，本插件走独立 AP
 """
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
 from nonebot.params import CommandArg
 
 delete_group_msg_test = on_command("撤回API测试", priority=5)

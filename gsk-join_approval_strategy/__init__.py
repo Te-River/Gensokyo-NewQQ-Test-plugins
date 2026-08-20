@@ -27,7 +27,7 @@ CQ-set_group 插件覆盖，本插件补齐 API 形式。
 """
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import Bot, Event
+from nonebot.adapters.onebot.v11 import Bot, Event, Message
 from nonebot.params import CommandArg
 
 # ---------- 脱敏辅助 ----------
