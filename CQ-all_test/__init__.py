@@ -5,10 +5,14 @@ Gensokyo-NewQQ CQ 码自动化测试插件
 权限: 仅超级用户 (SUPERUSERS)
 场景: 群聊 + 私聊 均可触发（无需 @）
 
-测试覆盖:
-  - 安全 (9项): [CQ:active] 私聊/频道, keyMap 完整性, reply 去重, 控制型 key 跳过等
+测试覆盖 (共32项):
+  - 安全 (8项): [CQ:active] 私聊/频道, keyMap 完整性, reply 去重, 控制型 key 跳过等
   - 需谨慎 (4项): video/music 段模式, markdown 私聊, avatar 段模式, 频道私信媒体
+  - 群聊扩展 (6项): 卡片/输入状态/流式消息/文件/@段/图文混合
   - 高风险 (2项): 频道扩展 CQ 码, 论坛媒体
+  - 新增API (5项): PR #70 只读 API（成员/黑名单/菜单/面板，未内邀报错属预期）
+  - 新增CQ码 (4项): md-only markdown 段回归, group_info 展开, set_group 防误触
+  - 破坏性操作 (3项): 不自动执行，附手动验证指引
 
 使用方法:
   将本文件放入 nonebot2 插件的加载目录，在 .env 中配置 SUPERUSERS 后
@@ -162,7 +166,11 @@ class TestResult:
             "",
         ]
 
-        categories = ["安全修复", "需谨慎修复", "高风险修复"]
+        # 动态收集分类（按插入顺序去重），避免硬编码漏掉新增分组（如群聊扩展）
+        categories = []
+        for t in self.tests:
+            if t["category"] not in categories:
+                categories.append(t["category"])
         for cat in categories:
             items = [t for t in self.tests if t["category"] == cat]
             if not items:
@@ -314,9 +322,9 @@ async def test_group_features(bot, event):
         "1")
     result.add("群聊扩展", "群聊卡片消息 msg_type=8", r)
 
-    # 2. 私聊输入状态（msg_type=6）
+    # 2. 私聊输入状态（msg_type=6；参数格式 type=数字,second=数字，与 inputNotifyPattern 匹配）
     r = await send_test(bot, event, "input_notify",
-        f"{_cq('input_notify', data='{\"hint\":\"测试输入状态\"}')}私聊输入状态测试",
+        f"{_cq('input_notify', type='1', second='60')}私聊输入状态测试",
         "2")
     result.add("群聊扩展", "私聊输入状态 msg_type=6", r)
 
@@ -364,6 +372,116 @@ async def test_high_risk_fixes(bot, event):
     result.add("高风险修复", "群聊 Markdown 消息", r)
 
 
+async def test_new_apis(bot, event):
+    """测试 PR #70 新增只读 API (5项) — 全部只读，不修改任何状态"""
+
+    # 测试目标群（触发群优先，私聊触发时回退配置的群号）
+    gid = str(getattr(event, "group_id", "") or "")
+    if not gid:
+        gid = str(plugin_config.gensokyo_test_group_id or "")
+    uid = str(plugin_config.gensokyo_test_user_id or getattr(event, "user_id", ""))
+
+    # 私聊触发且未配置群号：群级 API 全部跳过，不发起任何 call_api
+    if not gid:
+        skip_detail = "群级 API 需在群聊触发，或配置 gensokyo_test_group_id"
+        result.add("新增API", "get_group_member_list", "⏭️ 跳过", skip_detail)
+        result.add("新增API", "get_group_member_info", "⏭️ 跳过", skip_detail)
+        result.add("新增API", "get_group_member_blacklist", "⏭️ 跳过", skip_detail)
+        result.add("新增API", "get_custom_menu", "⏭️ 跳过", skip_detail)
+        result.add("新增API", "get_panel_list", "⏭️ 跳过", skip_detail)
+        return
+
+    # 1. 获取群成员列表
+    try:
+        r = await bot.call_api("get_group_member_list", group_id=gid)
+        members = r.get("data", r) if isinstance(r, dict) else r
+        result.add("新增API", "get_group_member_list", "✅ 通过",
+                   f"成员数: {len(members)} | {str(r)[:60]}")
+    except Exception as e:
+        result.add("新增API", "get_group_member_list", f"❌ 失败: {e}")
+
+    # 2. 获取群成员信息
+    try:
+        r = await bot.call_api("get_group_member_info", group_id=gid, user_id=uid)
+        info = r if isinstance(r, dict) else {}
+        nick = info.get("nickname", "?")
+        role = info.get("role", "?")
+        result.add("新增API", "get_group_member_info", "✅ 通过",
+                   f"nickname: {nick} | role: {role} | {str(r)[:60]}")
+    except Exception as e:
+        result.add("新增API", "get_group_member_info", f"❌ 失败: {e}")
+
+    # 3. 获取群黑名单列表（未内邀 bot 会报 11253 类错误，❌ 属预期）
+    try:
+        r = await bot.call_api("get_group_member_blacklist", group_id=gid, limit=20)
+        items = r.get("data", r) if isinstance(r, dict) else r
+        result.add("新增API", "get_group_member_blacklist", "✅ 通过",
+                   f"条目数: {len(items)} | {str(r)[:60]}")
+    except Exception as e:
+        result.add("新增API", "get_group_member_blacklist", f"❌ 失败: {e}",
+                   "未内邀属预期")
+
+    # 4. 获取自定义菜单
+    try:
+        r = await bot.call_api("get_custom_menu")
+        info = r if isinstance(r, dict) else {}
+        menu_state = "空" if not info.get("menu") else "非空"
+        version = info.get("version", "?")
+        result.add("新增API", "get_custom_menu", "✅ 通过",
+                   f"version: {version} | menu: {menu_state} | {str(r)[:60]}")
+    except Exception as e:
+        result.add("新增API", "get_custom_menu", f"❌ 失败: {e}")
+
+    # 5. 获取指令面板列表（未内邀 bot 会报错，❌ 属预期）
+    try:
+        r = await bot.call_api("get_panel_list", scope="group")
+        records = r.get("records", r.get("data", r)) if isinstance(r, dict) else r
+        result.add("新增API", "get_panel_list", "✅ 通过",
+                   f"records 数: {len(records)} | {str(r)[:60]}")
+    except Exception as e:
+        result.add("新增API", "get_panel_list", f"❌ 失败: {e}", "未内邀属预期")
+
+
+async def test_new_cq_codes(bot, event):
+    """测试 PR #70 新增 CQ 码能力 (4项) — 全部无破坏性"""
+
+    # 1. 嵌套 markdown 段（md-only 段数组，md gate 修复回归测试）
+    md_content = "### 一键测试 md-only 段\n> 若看到此消息则 md gate 修复生效"
+    md_seg = _markdown({"data": {"markdown": {"content": md_content}}})
+    r = await send_test(bot, event, "group", [md_seg], "1")
+    result.add("新增CQ码", "嵌套 markdown 段（md-only 段数组）", r,
+               "需 Gensokyo ≥ 39f5d2d")
+
+    # 2. [CQ:group_info] 内容展开
+    r = await send_test(bot, event, "group",
+        "[CQ:group_info,field=member_count] 一键测试", "2")
+    result.add("新增CQ码", "[CQ:group_info] 内容展开", r,
+               "cq_parse_mode=new 时展开为成员数；legacy/shadow 原文发出属预期")
+
+    # 3. [CQ:set_group,action=kick] 参数缺失防误触路径（不带 user_id）
+    r = await send_test(bot, event, "group",
+        "[CQ:set_group,action=kick]", "3")
+    result.add("新增CQ码", "[CQ:set_group,action=kick] 参数缺失防误触", r,
+               "仅验证解析路径，不真踢人；参数缺失时 CQ 码保留原文/无副作用")
+
+    # 4. [CQ:set_group,action=blacklist_add] 无参防误触（不带 user_ids）
+    r = await send_test(bot, event, "group",
+        "[CQ:set_group,action=blacklist_add]", "4")
+    result.add("新增CQ码", "[CQ:set_group,action=blacklist_add] 无参防误触", r,
+               "仅验证解析路径，不真拉黑；参数缺失时无副作用")
+
+
+async def test_destructive_skipped(bot, event):
+    """破坏性操作不自动执行，仅输出手动验证指引 (3项)"""
+
+    result.add("破坏性操作", "真实踢人 / 拉黑", "⏭️ 跳过",
+               "请用单独指令手动验证：「踢人API测试」/「黑名单操作API测试」")
+    result.add("破坏性操作", "面板创建 / 删除", "⏭️ 跳过",
+               "请用单独指令手动验证：「面板创建」/「面板删除」")
+    result.add("破坏性操作", "菜单设置", "⏭️ 跳过",
+               "请用单独指令手动验证：「菜单设置」")
+
+
 # ---------- 主入口 ----------
 
 
@@ -382,11 +500,12 @@ async def handle_auto_test(bot, event: Event, matcher: Matcher):
         f"触发者: {sender_id}\n"
         f"场景: {msg_type}\n"
         f"群号: {group_id}\n"
-        f"共 20 项测试（安全8 + 需谨慎4 + 群聊扩展6 + 高风险2）\n"
+        f"共 32 项测试（安全8 + 需谨慎4 + 群聊扩展6 + 高风险2"
+        f" + 新增API5 + 新增CQ4 + 破坏性跳过3）\n"
         f"请稍候，消息将陆续发送..."
     )
 
-    # 依次执行四组测试，每组间等待 2 秒
+    # 依次执行七组测试，每组间等待 2 秒
     await test_safe_fixes(bot, event)
     await asyncio.sleep(2)
 
@@ -397,6 +516,15 @@ async def handle_auto_test(bot, event: Event, matcher: Matcher):
     await asyncio.sleep(2)
 
     await test_high_risk_fixes(bot, event)
+    await asyncio.sleep(2)
+
+    await test_new_apis(bot, event)
+    await asyncio.sleep(2)
+
+    await test_new_cq_codes(bot, event)
+    await asyncio.sleep(2)
+
+    await test_destructive_skipped(bot, event)
 
     # 发送报告
     report = result.summary()
